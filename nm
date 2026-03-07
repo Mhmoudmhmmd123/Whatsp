@@ -1,0 +1,420 @@
+
+#!/usr/bin/env python3
+# Auto Gmail Creator - Headless Version
+
+import subprocess
+import sys
+import os
+import time
+import random
+import string
+import json
+import socket
+from datetime import datetime
+from pathlib import Path
+
+# ===== Automatic Library Installation =====
+def install_if_missing(package):
+    """Install a package if it's not already present"""
+    try:
+        __import__(package)
+        return True
+    except ImportError:
+        print(f"📦 Installing {package}...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+        return True
+
+# Install all required libraries
+required_packages = ["selenium", "requests"]
+for pkg in required_packages:
+    install_if_missing(pkg)
+
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options as ChromeOptions
+from selenium.webdriver.chrome.service import Service as ChromeService
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+import requests
+
+# ===== Configuration Paths =====
+# These paths are for a standard Linux environment (like Ubuntu).
+# For Termux, these might be different or automatically handled by the driver.
+CHROMEDRIVER_PATH = "/usr/bin/chromedriver"
+CHROME_BINARY_PATH = "/usr/bin/chromium-browser"
+
+# ===== Rest of the Code =====
+HOME = str(Path.home())
+PROJECT_DIR = os.path.join(HOME, "Auto-Gmail-Creator")
+ACC_FILE = os.path.join(PROJECT_DIR, "accounts.json")
+IP_FILE = os.path.join(PROJECT_DIR, "ip_log.json")
+SCREENSHOT_DIR = os.path.join(PROJECT_DIR, "screenshots")
+MAX_PER_IP = 2
+
+# ===== Colors =====
+GREEN = "\033[0;32m"
+YELLOW = "\033[1;33m"
+RED = "\033[0;31m"
+BLUE = "\033[0;34m"
+CYAN = "\033[0;36m"
+NC = "\033[0m"
+
+def printc(color, msg):
+    print(f"{color}{msg}{NC}")
+
+def get_ip():
+    try:
+        return requests.get("https://api.ipify.org", timeout=3).text
+    except:
+        return f"local_{socket.gethostname()}"
+
+def save_account(email, pwd, ip):
+    accs = []
+    if os.path.exists(ACC_FILE):
+        with open(ACC_FILE) as f:
+            accs = json.load(f)
+    
+    accs.append({
+        "email": email,
+        "password": pwd,
+        "ip": ip,
+        "time": datetime.now().isoformat()
+    })
+    
+    os.makedirs(PROJECT_DIR, exist_ok=True)
+    with open(ACC_FILE, "w") as f:
+        json.dump(accs, f, indent=2)
+    
+    ips = {}
+    if os.path.exists(IP_FILE):
+        with open(IP_FILE) as f:
+            ips = json.load(f)
+    
+    if ip not in ips:
+        ips[ip] = {"count": 0, "accounts": []}
+    
+    ips[ip]["count"] += 1
+    ips[ip]["accounts"].append({
+        "email": email,
+        "time": datetime.now().isoformat()
+    })
+    
+    with open(IP_FILE, "w") as f:
+        json.dump(ips, f, indent=2)
+    
+    printc(CYAN, f"📊 Total: {len(accs)} accounts")
+
+def generate_data():
+    first_names = ["Ahmed", "Mohamed", "Omar", "Ali", "Hassan", "Khaled"]
+    last_names = ["Hassan", "Mohamed", "Ahmed", "Ali", "Ibrahim", "Said"]
+    
+    first = random.choice(first_names)
+    last = random.choice(last_names)
+    num = str(random.randint(100, 9999))
+    username = f"{first.lower()}{last.lower()}{num}"
+    password = f"{first.capitalize()}{last}${random.randint(100, 999)}"
+    
+    return {
+        "first": first,
+        "last": last,
+        "username": username,
+        "password": password,
+        "email": f"{username}@gmail.com",
+        "day": str(random.randint(1, 28)),
+        "month": str(random.randint(1, 12)),
+        "year": str(random.randint(1990, 2005))
+    }
+
+def get_ip_status():
+    ip = get_ip()
+    ips = {}
+    if os.path.exists(IP_FILE):
+        with open(IP_FILE) as f:
+            ips = json.load(f)
+    count = ips.get(ip, {}).get("count", 0)
+    return ip, count, count < MAX_PER_IP
+
+def setup_driver():
+    options = ChromeOptions()
+    options.add_argument("--headless") # Run in headless mode
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--window-size=1920,1080") # Set a default window size
+
+    # Check if running in Termux (simplified check)
+    if os.environ.get("TERMUX_VERSION"):
+        # Termux specific paths (if chromium/chromedriver are eventually available)
+        # For now, rely on chromedriver being in PATH or auto-detected by Selenium
+        # If issues persist, specific Termux paths might be needed here.
+        pass # Selenium might auto-detect if in PATH
+    else:
+        # Standard Linux paths
+        if os.path.exists(CHROME_BINARY_PATH):
+            options.binary_location = CHROME_BINARY_PATH
+        
+    service = ChromeService(executable_path=CHROMEDRIVER_PATH)
+    
+    return webdriver.Chrome(service=service, options=options)
+
+def find_username_field(driver):
+    """Search for the username field"""
+    methods = [
+        (By.ID, "identifierId"),
+        (By.ID, "Email"),
+        (By.ID, "username"),
+        (By.NAME, "Username"),
+        (By.NAME, "username"),
+        (By.NAME, "Email"),
+        (By.CSS_SELECTOR, "input[type='email']"),
+        (By.CSS_SELECTOR, "input[aria-label*='email' i]"),
+        (By.XPATH, "//input[@type='email']"),
+    ]
+    
+    for method, selector in methods:
+        try:
+            elem = driver.find_element(method, selector)
+            if elem.is_displayed():
+                return elem
+        except:
+            continue
+    
+    for inp in driver.find_elements(By.TAG_NAME, "input"):
+        if inp.is_displayed() and inp.get_attribute("type") in ["text", "email"]:
+            return inp
+    
+    return None
+
+def fill_date_section(driver, data):
+    """Fill date section"""
+    try:
+        # Google's signup page often changes. Using JavaScript to set values can be more robust.
+        # Ensure elements are present before attempting to interact.
+        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "day")))
+        day = driver.find_element(By.ID, "day")
+        driver.execute_script("arguments[0].value = arguments[1];", day, data["day"])
+        
+        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "month")))
+        month = driver.find_element(By.ID, "month")
+        # For month, Google often uses a select element, so direct value setting might not work.
+        # We'll try to select by value if it's a select element, otherwise use JS.
+        if month.tag_name == 'select':
+            from selenium.webdriver.support.ui import Select
+            Select(month).select_by_value(data["month"])
+        else:
+            driver.execute_script("arguments[0].value = arguments[1];", month, data["month"])
+        
+        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "year")))
+        year = driver.find_element(By.ID, "year")
+        driver.execute_script("arguments[0].value = arguments[1];", year, data["year"])
+        
+        # Gender field might also be a select or radio buttons. Adapt as needed.
+        # For simplicity, if it's a select, we'll try to pick a gender.
+        try:
+            gender = driver.find_element(By.ID, "gender")
+            if gender.tag_name == 'select':
+                from selenium.webdriver.support.ui import Select
+                gender_options = ["MALE", "FEMALE"]
+                Select(gender).select_by_value(random.choice(gender_options))
+            else:
+                # Fallback for non-select gender fields, might need more specific handling
+                pass
+        except:
+            pass # Gender field might not always be present or required
+        
+        return True
+    except Exception as e:
+        printc(RED, f"❌ Error filling date/gender section: {e}")
+        return False
+
+def create_account():
+    data = generate_data()
+    printc(GREEN, f"\n📧 {data['email']}")
+    printc(GREEN, f"🔑 {data['password']}")
+    
+    driver = None
+    screenshot_path = None
+    try:
+        driver = setup_driver()
+        wait = WebDriverWait(driver, 20) # Increased wait time
+        
+        driver.get("https://accounts.google.com/signup")
+        time.sleep(5)
+        
+        # Step 1: First and Last Name
+        wait.until(EC.presence_of_element_located((By.ID, "firstName")))
+        driver.find_element(By.ID, "firstName").send_keys(data["first"])
+        driver.find_element(By.ID, "lastName").send_keys(data["last"])
+        
+        # Click Next button (using a more robust XPath)
+        wait.until(EC.element_to_be_clickable((By.XPATH, "//button[.//span[text()='Next']] | //div[@id='accountDetailsNext']//button"))).click()
+        time.sleep(3)
+        
+        # Step 2: Date of Birth and Gender
+        if not fill_date_section(driver, data):
+            os.makedirs(SCREENSHOT_DIR, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            screenshot_path = os.path.join(SCREENSHOT_DIR, f"error_date_page_{ts}.png")
+            driver.save_screenshot(screenshot_path)
+            printc(RED, f"❌ Error filling date. Screenshot saved: {screenshot_path}")
+            return False, screenshot_path
+        
+        wait.until(EC.element_to_be_clickable((By.XPATH, "//button[.//span[text()='Next']] | //div[@id='birthdaygenderNext']//button"))).click()
+        time.sleep(4)
+        
+        # Step 3: Choose your Gmail address (or create one)
+        # Google might offer suggestions or ask to create one.
+        # We'll try to find the 
+option to create a custom Gmail address.
+        try:
+            # Look for an option to create a custom Gmail address
+            create_custom_email_xpath = "//div[contains(@data-email-option,".com")]//div[contains(text(),'Create your own Gmail address')]"
+            wait.until(EC.element_to_be_clickable((By.XPATH, create_custom_email_xpath))).click()
+            time.sleep(2)
+
+            # Input the desired username
+            username_input_xpath = "//input[@name=\'Username\']"
+            wait.until(EC.presence_of_element_located((By.XPATH, username_input_xpath)))
+            driver.find_element(By.XPATH, username_input_xpath).send_keys(data["username"])
+            time.sleep(2)
+            
+            # Click Next after entering username
+            wait.until(EC.element_to_be_clickable((By.XPATH, "//button[.//span[text()=\'Next\']] | //div[@id=\'usernameNext\']//button"))).click()
+            time.sleep(3)
+
+        except Exception as e:
+            printc(YELLOW, f"⚠️ Could not find custom email option or encountered error: {e}. Trying to proceed with suggested email if available.")
+            # If custom email option not found, try to click Next assuming a suggested email is pre-selected
+            try:
+                wait.until(EC.element_to_be_clickable((By.XPATH, "//button[.//span[text()=\'Next\']] | //div[@id=\'view_container\']//button"))).click()
+                time.sleep(3)
+            except Exception as e_next:
+                printc(RED, f"❌ Failed to proceed after username step: {e_next}")
+                os.makedirs(SCREENSHOT_DIR, exist_ok=True)
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                screenshot_path = os.path.join(SCREENSHOT_DIR, f"error_username_next_{ts}.png")
+                driver.save_screenshot(screenshot_path)
+                printc(RED, f"Screenshot saved: {screenshot_path}")
+                return False, screenshot_path
+
+        # Step 4: Password
+        wait.until(EC.presence_of_element_located((By.NAME, "Passwd")))
+        driver.find_element(By.NAME, "Passwd").send_keys(data["password"])
+        driver.find_element(By.NAME, "ConfirmPasswd").send_keys(data["password"])
+        
+        wait.until(EC.element_to_be_clickable((By.XPATH, "//button[.//span[text()=\'Next\']] | //div[@id=\'passwordNext\']//button"))).click()
+        time.sleep(4)
+        
+        # Step 5: Phone verification (try to skip)
+        try:
+            # Look for a 
+skip button or text
+            skip_button_xpath = "//button[.//span[text()=\'Skip\']] | //span[text()=\'Skip\']"
+            wait.until(EC.element_to_be_clickable((By.XPATH, skip_button_xpath))).click()
+            printc(GREEN, "✅ Skipped phone verification.")
+            time.sleep(3)
+        except Exception as e:
+            printc(YELLOW, f"⚠️ Could not find or click Skip button for phone verification: {e}. Proceeding...")
+            # If skip is not available, Google might force phone verification or proceed directly.
+            # We will try to click next if there is a next button, assuming it's not stuck.
+            try:
+                next_button_xpath = "//button[.//span[text()=\'Next\']] | //div[@id=\'challengeNext\']//button"
+                wait.until(EC.element_to_be_clickable((By.XPATH, next_button_xpath))).click()
+                printc(YELLOW, "⚠️ Phone verification might be required. Attempted to click Next.")
+                time.sleep(3)
+            except Exception as e_next:
+                printc(RED, f"❌ Stuck at phone verification, no Skip or Next button found: {e_next}")
+                os.makedirs(SCREENSHOT_DIR, exist_ok=True)
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                screenshot_path = os.path.join(SCREENSHOT_DIR, f"error_phone_verification_{ts}.png")
+                driver.save_screenshot(screenshot_path)
+                printc(RED, f"Screenshot saved: {screenshot_path}")
+                return False, screenshot_path
+
+        # Step 6: Review account info and agree to terms
+        # Scroll down to find the 
+            # Scroll to the bottom of the page to ensure the "Agree" button is visible and clickable
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(2)
+
+            # Look for the "Agree" button
+            agree_button_xpath = "//button[.//span[text()=\'I agree\']] | //span[text()=\'I agree\'] | //button[.//span[text()=\'Agree\']]"
+            wait.until(EC.element_to_be_clickable((By.XPATH, agree_button_xpath))).click()
+            printc(GREEN, "✅ Agreed to terms.")
+            time.sleep(5) # Give time for final processing
+
+            save_account(data["email"], data["password"], get_ip())
+            return True, None
+            
+        except Exception as e:
+            printc(RED, f"❌ Error agreeing to terms or finalization: {e}")
+            if driver:
+                os.makedirs(SCREENSHOT_DIR, exist_ok=True)
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                screenshot_path = os.path.join(SCREENSHOT_DIR, f"error_agree_terms_{ts}.png")
+                driver.save_screenshot(screenshot_path)
+                printc(RED, f"Screenshot saved: {screenshot_path}")
+            return False, screenshot_path
+
+    except Exception as e:
+        printc(RED, f"❌ Error: {str(e)[:150]}")
+        if driver:
+            os.makedirs(SCREENSHOT_DIR, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            screenshot_path = os.path.join(SCREENSHOT_DIR, f"error_general_{ts}.png")
+            driver.save_screenshot(screenshot_path)
+            printc(RED, f"Screenshot saved: {screenshot_path}")
+        return False, screenshot_path
+    finally:
+        if driver:
+            driver.quit()
+
+def wait_for_ip_change(current_ip):
+    printc(YELLOW, "\n⏳ Waiting for IP change...")
+    while True:
+        time.sleep(10)
+        new_ip = get_ip()
+        if new_ip != current_ip:
+            printc(GREEN, f"✅ New IP: {new_ip}")
+            return new_ip
+
+def main():
+    printc(GREEN, "\n📧 Auto Gmail Creator - Headless")
+    
+    total = 0
+    if os.path.exists(ACC_FILE):
+        with open(ACC_FILE) as f:
+            total = len(json.load(f))
+    
+    cycle = 1
+    
+    while True:
+        printc(CYAN, "\n" + ("─" * 50))
+        printc(CYAN, f"🔄 Cycle {cycle}")
+        
+        ip, count, can_use = get_ip_status()
+        printc(CYAN, f"🌐 {ip} ({count}/{MAX_PER_IP})")
+        printc(CYAN, f"📈 Total: {total}")
+        
+        if can_use:
+            remaining = MAX_PER_IP - count
+            for i in range(remaining):
+                success, screenshot = create_account()
+                if success:
+                    total += 1
+                elif screenshot:
+                    printc(RED, f"Screenshot taken on failure: {screenshot}")
+                
+                if i < remaining - 1:
+                    wait = random.uniform(5, 10)
+                    printc(YELLOW, f"⏳ Waiting {wait:.1f} seconds...")
+                    time.sleep(wait)
+        
+        ip = wait_for_ip_change(ip)
+        cycle += 1
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        printc(YELLOW, "\n\n👋 Bye")
